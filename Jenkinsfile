@@ -1,95 +1,71 @@
 pipeline {
+
     agent {
         node {
-            label 'ubuntu-build-agent' // Explicitly runs this pipeline on your Ubuntu Slave node
+            label 'ubuntu-build-agent'
         }
     }
 
     tools {
-        jdk 'Java8'       // Matches the Name in your Global Tool Configuration pointing to Java 8
-        maven 'Maven3'    // Matches the Name in your Global Tool Configuration pointing to Maven
-    }
-
-    parameters {
-        choice(
-            name: 'CHOICES',
-            choices: ['dev', 'test', 'prod'],
-            description: 'Select deployment environment'
-        )
+        maven 'Maven3'
+        jdk 'Java8'
     }
 
     stages {
-        stage('Checkout') {
-            steps {
-                // Wipe the remote workspace first to clean out stale workspace files
-                cleanWs(deleteDirs: true, notFailBuild: true)
-                
-                echo "Selected Environment: ${params.CHOICES}"
-                
-                // Automatically handles checking out your specific GitHub repository code
-                checkout scm
-            }
-        }
 
         stage('GitLeaks Scan') {
             steps {
-                echo '=== Running Secret Scanning ==='
-                // Runs the scanner globally on the slave and safely dumps the results to a JSON file
+
                 sh '''
                 gitleaks detect \
                 --source . \
                 --report-format json \
-                --report-path gitleaks-report.json || echo "GitLeaks scanning evaluation completed."
+                --report-path gitleaks-report.json || true
                 '''
+
             }
         }
 
-        stage('Maven Compile') {
+        stage('Approval Before Build') {
             steps {
-                echo '=== Compiling Java Application Code ==='
-                sh 'mvn clean compile'
+
+                input message: 'Do you want to continue with Maven Build and Test?',
+                      ok: 'Proceed'
+
             }
         }
 
-        stage('Maven Test') {
-            steps {
-                echo '=== Running Application Unit Tests ==='
-                sh 'mvn test'
-            }
-        }
+        stage('Parallel Build and Test') {
 
-        stage('Maven Build') {
-            when {
-                expression {
-                    params.CHOICES == 'prod'
+            parallel {
+
+                stage('Maven Compile') {
+                    steps {
+
+                        sh 'mvn clean compile'
+
+                    }
                 }
-            }
-            steps {
-                // Interactive manual gate required for production branch safety
-                input message: 'Approve before starting Maven Build?', ok: 'Proceed'
-                
-                echo '=== Packaging Production War Artifact ==='
-                sh 'mvn package -DskipTests'
+
+                stage('Maven Test') {
+                    steps {
+
+                        sh 'mvn test'
+
+                    }
+                }
             }
         }
     }
 
     post {
+
         always {
-            echo "Pipeline Run Finalized. Final Build Status: ${currentBuild.currentResult}"
-            
-            // Checks if the security report exists before archiving it to avoid throwing errors
-            script {
-                if (fileExists('gitleaks-report.json')) {
-                    archiveArtifacts artifacts: 'gitleaks-report.json', fingerprint: true
-                }
-            }
-        }
-        success {
-            echo 'Pipeline executed successfully on the remote distributed architecture!'
-        }
-        failure {
-            echo 'Pipeline build failed. Please review the specific stage logs above.'
+
+            archiveArtifacts artifacts: 'gitleaks-report.json',
+            allowEmptyArchive: true,
+            fingerprint: true
+
         }
     }
 }
